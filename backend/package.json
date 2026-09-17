@@ -8,6 +8,9 @@
     "start:stdio": "node mcp-server.js",
     "start:rest": "node server-rest.js"
   },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "cors": "^2.8.5",
