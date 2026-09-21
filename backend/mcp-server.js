@@ -96,6 +96,21 @@ function createMcpServer() {
         return { content: [{ type: "text", text: JSON.stringify({ error: "No pending login. Call login_investor first." }) }] };
       }
 
+      // Deep-search any object for a field whose name looks like the session token
+      function findInvetorlink(obj, depth = 0) {
+        if (!obj || typeof obj !== "object" || depth > 5) return null;
+        for (const [k, v] of Object.entries(obj)) {
+          if (/invet[oa]r.*link|investorlink|session_?id|invetorlink/i.test(k) && typeof v === "string" && v.length > 20) return v;
+        }
+        for (const v of Object.values(obj)) {
+          if (typeof v === "object") {
+            const found = findInvetorlink(v, depth + 1);
+            if (found) return found;
+          }
+        }
+        return null;
+      }
+
       try {
         // Step 2a: validate OTP
         const otpResult = await kotakApi.validateOtp({ mobile: session.mobile, otp });
@@ -104,52 +119,32 @@ function createMcpServer() {
           return { content: [{ type: "text", text: JSON.stringify({ error: "OTP verification failed", detail: otpResult }) }] };
         }
 
-        // OTP validation itself may return the session token (first-login / no-MPIN path)
-        let investorLink =
-          otpResult?.Result?.[0]?.Invetorlink ||
-          otpResult?.Table?.[0]?.Invetorlink ||
-          otpResult?.msgTable?.[0]?.Invetorlink ||
-          otpResult?.Invetorlink;
+        // OTP validation itself may return the session token
+        let investorLink = findInvetorlink(otpResult);
 
-        // Step 2b: get MPIN details — captures FIRST_LOGIN flag
+        // Step 2b: get MPIN details
         const mpinDet = await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => ({}));
-        const firstLogin = mpinDet?.Table?.[0]?.FIRST_LOGIN || mpinDet?.Result?.[0]?.FIRST_LOGIN || mpinDet?.FIRST_LOGIN;
+        if (!investorLink) investorLink = findInvetorlink(mpinDet);
 
         // Step 2c: if MPIN provided, try CHECKLOGINNEW
+        let loginResult = null;
         if (!investorLink && mpin) {
-          const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
-          investorLink =
-            loginResult?.Result?.[0]?.Invetorlink ||
-            loginResult?.Table?.[0]?.Invetorlink ||
-            loginResult?.msgTable?.[0]?.Invetorlink ||
-            loginResult?.Invetorlink;
-
-          if (!investorLink) {
-            const hint = firstLogin === "Y"
-              ? "FIRST_LOGIN is Y — this account's MPIN has not been set up yet. Please open the Kotak MF app or website, complete the first-time login, and set your MPIN. Then try again. Alternatively, use the set_session tool to inject a SESSION_ID copied from browser DevTools."
-              : "MPIN was not accepted. Please check the MPIN and try again, or use set_session to inject a SESSION_ID from your browser.";
-            return {
-              content: [{
-                type: "text",
-                text: JSON.stringify({
-                  error: "Could not obtain session token after MPIN login",
-                  hint,
-                  first_login: firstLogin,
-                  raw_login: loginResult,
-                }),
-              }],
-            };
-          }
+          loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+          investorLink = findInvetorlink(loginResult);
         }
 
         if (!investorLink) {
-          const hint = firstLogin === "Y"
-            ? "FIRST_LOGIN is Y — MPIN not set up. Please complete first-time login on the Kotak MF app/website to set your MPIN, then retry. Or use set_session to inject a SESSION_ID from browser DevTools."
-            : "Please provide your MPIN along with the OTP.";
+          // Return ALL raw responses so Claude (and the developer) can see exactly what came back
           return {
             content: [{
               type: "text",
-              text: JSON.stringify({ error: "No session token returned", hint, first_login: firstLogin }),
+              text: JSON.stringify({
+                error: "Could not find session token in any API response. The raw responses are included below for debugging.",
+                hint: "Share this output so the session token field name can be identified and the code updated.",
+                raw_otpValidate: otpResult,
+                raw_mpinDet: mpinDet,
+                raw_checkLoginNew: loginResult,
+              }, null, 2),
             }],
           };
         }
