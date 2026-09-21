@@ -5,6 +5,7 @@ import { z } from "zod";
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import { randomUUID } from "crypto";
 
 import * as kotakApi from "./kotak/api.js";
 import { setSession, getSession, clearSession, hasActiveSession } from "./kotak/session.js";
@@ -315,6 +316,49 @@ if (isHttp) {
 
   app.get("/health", (_, res) => res.json({ status: "ok", version: "2.0.0-kotak" }));
 
+  // ── OAuth endpoints (required by Claude's Connector system) ────────────────
+  // This is a no-auth pass-through — the MCP server itself handles identity.
+
+  app.get("/.well-known/oauth-authorization-server", (req, res) => {
+    const base = `https://${req.headers.host}`;
+    res.json({
+      issuer: base,
+      authorization_endpoint: `${base}/oauth/authorize`,
+      token_endpoint: `${base}/oauth/token`,
+      registration_endpoint: `${base}/oauth/register`,
+      response_types_supported: ["code"],
+      grant_types_supported: ["authorization_code"],
+      code_challenge_methods_supported: ["S256"],
+    });
+  });
+
+  app.post("/oauth/register", (req, res) => {
+    res.status(201).json({
+      client_id: randomUUID(),
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      redirect_uris: req.body.redirect_uris || [],
+      ...req.body,
+    });
+  });
+
+  app.get("/oauth/authorize", (req, res) => {
+    const { redirect_uri, state } = req.query;
+    const url = new URL(redirect_uri);
+    url.searchParams.set("code", randomUUID());
+    if (state) url.searchParams.set("state", state);
+    res.redirect(url.toString());
+  });
+
+  app.post("/oauth/token", express.urlencoded({ extended: false }), (req, res) => {
+    res.json({
+      access_token: randomUUID(),
+      token_type: "bearer",
+      expires_in: 86400,
+      scope: "mcp",
+    });
+  });
+
+  // ── MCP endpoint ────────────────────────────────────────────────────────────
   app.all("/mcp", async (req, res) => {
     const server = createMcpServer();
     const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
