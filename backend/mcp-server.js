@@ -122,6 +122,7 @@ function createMcpServer() {
 
       try {
         kotakApi.clearResponseLog();
+        kotakApi.clearCookieJar();
 
         // Step 2a: validate OTP
         const otpResult = await kotakApi.validateOtp({ mobile: session.mobile, otp });
@@ -131,43 +132,59 @@ function createMcpServer() {
         }
 
         // Step 2b: get MPIN details
-        await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => ({}));
+        await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => {});
 
-        // Step 2c: if MPIN provided, try CHECKLOGINNEW
+        // Step 2c: CHECKLOGINNEW — seeds the AWSALB sticky-session cookie in the jar
         if (mpin) {
-          await kotakApi.checkLoginNew({ mobile: session.mobile, mpin }).catch(() => ({}));
+          await kotakApi.checkLoginNew({ mobile: session.mobile, mpin }).catch(() => {});
         }
 
-        // Search every response — body AND headers — for the session token
+        // Step 2d: INSERTLOGINDETAILS — audit call the browser always makes after login
+        // This finalises the session on Kotak's backend
+        await kotakApi.insertLoginDetails({
+          mobile: session.mobile,
+          email: session.email || "",
+        }).catch(() => {});
+
+        // Step 2e: Check if any response contains an Invetorlink
         let investorLink = null;
         for (const entry of kotakApi.responseLog) {
           investorLink = findInvetorlink(entry.headers) || findInvetorlink(entry.body);
           if (investorLink) break;
         }
 
-        if (!investorLink) {
-          // Full log including response headers, so the token's location can be identified
+        // Whether or not we have an Invetorlink, we now have the AWSALB cookie
+        // which is enough for all subsequent API calls
+        const cookieJar = kotakApi.getCookieJar();
+        const hasCookies = cookieJar.includes("AWSALB");
+
+        if (!investorLink && !hasCookies) {
           try {
             writeFileSync("/tmp/kotak-debug.json", JSON.stringify({
-              error: "Session token not found in any response body or header",
+              error: "No session token and no AWSALB cookie — login could not be established",
               responses: kotakApi.responseLog,
             }, null, 2));
           } catch {}
           return {
             content: [{
               type: "text",
-              text: "Login failed: no session token in any response body or header. Full log (including response headers) saved to /tmp/kotak-debug.json — use get_debug_log to read it.",
+              text: "Login failed: neither a session token nor an AWSALB sticky-session cookie was returned. Debug log saved to /tmp/kotak-debug.json.",
             }],
           };
         }
 
-        setSession({ ...session, investorLink, step: "authenticated" });
+        setSession({
+          ...session,
+          investorLink: investorLink || null,
+          step: "authenticated",
+        });
 
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
               status: "authenticated",
+              session_mode: investorLink ? "token" : "cookie",
               message: "Login successful. You can now view your folios, check schemes, and create SIPs.",
             }, null, 2),
           }],
@@ -229,6 +246,7 @@ function createMcpServer() {
     {},
     async () => {
       clearSession();
+      kotakApi.clearCookieJar();
       return { content: [{ type: "text", text: JSON.stringify({ status: "logged_out" }) }] };
     }
   );
