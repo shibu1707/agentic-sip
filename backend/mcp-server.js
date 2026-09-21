@@ -176,6 +176,7 @@ function createMcpServer() {
         setSession({
           ...session,
           investorLink: investorLink || null,
+          otp,  // stored for any calls that need the validated OTP
           step: "authenticated",
         });
 
