@@ -140,13 +140,17 @@ function createMcpServer() {
         }
 
         // Step 2d: INSERTLOGINDETAILS — audit call the browser always makes after login
-        // This finalises the session on Kotak's backend
         await kotakApi.insertLoginDetails({
           mobile: session.mobile,
           email: session.email || "",
         }).catch(() => {});
 
-        // Step 2e: Check if any response contains an Invetorlink
+        // Step 2e: GETPORTFOLIODETAILS (browser-style: USER_ID + PAN, no SESSION_ID, with AWSALB cookie)
+        // This is the call whose RESPONSE contains the SESSION_ID / Invetorlink
+        const partialSession = { mobile: session.mobile, pan: session.pan, investorLink: null };
+        await kotakApi.getPortfolioDetails(partialSession).catch(() => {});
+
+        // Step 2f: Extract the Invetorlink — search every response body and header
         let investorLink = null;
         for (const entry of kotakApi.responseLog) {
           investorLink = findInvetorlink(entry.headers) || findInvetorlink(entry.body);

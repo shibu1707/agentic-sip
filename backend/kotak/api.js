@@ -171,6 +171,19 @@ export async function getPortfolioDetails(session) {
   return kotakPost("/Admin/GETPORTFOLIODETAILS", enc, session.investorLink || null);
 }
 
+// Get folio summary — browser uses this for the folio list view (SESSION_ID required)
+export async function getFolioSumm({ folioNo }, session) {
+  const enc = authPayload({ FLAG: "GETFOLIOSUMM", FOLIO: folioNo }, session);
+  return kotakPost("/Admin/GETFOLIOSUMM", enc, session.investorLink || null);
+}
+
+// Get SIP activation details for a folio (no SESSION_ID needed — uses FOLIO only)
+export async function getSipActivationDet({ folioNo }) {
+  return kotakPost("/Admin/GETFOLIODETAILS",
+    encryptDotnet(JSON.stringify({ FLAG: "GETSIPACTIVATIONDET", FOLIO: folioNo }))
+  );
+}
+
 export async function getFolioDetails({ folioNo, trxnType = "SIP" }, session) {
   const enc = authPayload(
     { FLAG: "GETIMDETKYC", FOLIO: folioNo, TRXN_TYPE: trxnType, TRXN_MODE: "FT" },
