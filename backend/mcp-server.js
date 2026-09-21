@@ -85,10 +85,10 @@ function createMcpServer() {
   // ── Step 2: verify_otp ─────────────────────────────────────────────────────
   server.tool(
     "verify_otp",
-    "Complete login by verifying the OTP and the user's 6-digit Kotak MPIN. Call this after login_investor once the user provides both their OTP and their MPIN.",
+    "Complete login by verifying the OTP. If the account has MPIN set up, also provide the 6-digit MPIN. If MPIN is not set up yet (FIRST_LOGIN account), leave mpin blank and the OTP alone may suffice.",
     {
       otp: z.string().describe("6-digit OTP received on mobile"),
-      mpin: z.string().describe("6-digit Kotak MPIN (the PIN set up for quick login on the Kotak MF app/website)"),
+      mpin: z.string().optional().describe("6-digit Kotak MPIN for quick login (leave blank if not set up yet)"),
     },
     async ({ otp, mpin }) => {
       const session = getSession();
@@ -104,24 +104,52 @@ function createMcpServer() {
           return { content: [{ type: "text", text: JSON.stringify({ error: "OTP verification failed", detail: otpResult }) }] };
         }
 
-        // Step 2b: get MPIN details (pre-check)
-        await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => {});
+        // OTP validation itself may return the session token (first-login / no-MPIN path)
+        let investorLink =
+          otpResult?.Result?.[0]?.Invetorlink ||
+          otpResult?.Table?.[0]?.Invetorlink ||
+          otpResult?.msgTable?.[0]?.Invetorlink ||
+          otpResult?.Invetorlink;
 
-        // Step 2c: login with MPIN → returns Invetorlink (session token)
-        const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+        // Step 2b: get MPIN details — captures FIRST_LOGIN flag
+        const mpinDet = await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => ({}));
+        const firstLogin = mpinDet?.Table?.[0]?.FIRST_LOGIN || mpinDet?.Result?.[0]?.FIRST_LOGIN || mpinDet?.FIRST_LOGIN;
 
-        // Invetorlink may be nested in Result[0] or Table[0]
-        const investorLink =
-          loginResult?.Result?.[0]?.Invetorlink ||
-          loginResult?.Table?.[0]?.Invetorlink ||
-          loginResult?.msgTable?.[0]?.Invetorlink ||
-          loginResult?.Invetorlink;
+        // Step 2c: if MPIN provided, try CHECKLOGINNEW
+        if (!investorLink && mpin) {
+          const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+          investorLink =
+            loginResult?.Result?.[0]?.Invetorlink ||
+            loginResult?.Table?.[0]?.Invetorlink ||
+            loginResult?.msgTable?.[0]?.Invetorlink ||
+            loginResult?.Invetorlink;
+
+          if (!investorLink) {
+            const hint = firstLogin === "Y"
+              ? "FIRST_LOGIN is Y — this account's MPIN has not been set up yet. Please open the Kotak MF app or website, complete the first-time login, and set your MPIN. Then try again. Alternatively, use the set_session tool to inject a SESSION_ID copied from browser DevTools."
+              : "MPIN was not accepted. Please check the MPIN and try again, or use set_session to inject a SESSION_ID from your browser.";
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  error: "Could not obtain session token after MPIN login",
+                  hint,
+                  first_login: firstLogin,
+                  raw_login: loginResult,
+                }),
+              }],
+            };
+          }
+        }
 
         if (!investorLink) {
+          const hint = firstLogin === "Y"
+            ? "FIRST_LOGIN is Y — MPIN not set up. Please complete first-time login on the Kotak MF app/website to set your MPIN, then retry. Or use set_session to inject a SESSION_ID from browser DevTools."
+            : "Please provide your MPIN along with the OTP.";
           return {
             content: [{
               type: "text",
-              text: JSON.stringify({ error: "Login failed — could not obtain session token", raw: loginResult }),
+              text: JSON.stringify({ error: "No session token returned", hint, first_login: firstLogin }),
             }],
           };
         }
@@ -140,6 +168,34 @@ function createMcpServer() {
       } catch (err) {
         return { content: [{ type: "text", text: JSON.stringify({ error: err.message }) }] };
       }
+    }
+  );
+
+  // ── set_session (manual fallback) ──────────────────────────────────────────
+  server.tool(
+    "set_session",
+    "Manually inject a Kotak MF session token obtained from browser DevTools. Use this when automatic login cannot complete (e.g. MPIN not set up). The user should log in at kotakmf.com, open DevTools → Network, find any authenticated request, and copy the 'securityKey' request header value.",
+    {
+      session_id: z.string().describe("The Invetorlink / SESSION_ID value from a live browser session (the securityKey header value from any authenticated Kotak MF API call)"),
+      mobile: z.string().optional().describe("10-digit mobile number (optional, improves context for subsequent calls)"),
+      pan: z.string().optional().describe("PAN (optional)"),
+    },
+    async ({ session_id, mobile, pan }) => {
+      setSession({
+        investorLink: session_id,
+        mobile: mobile || getSession()?.mobile || "",
+        pan: pan || getSession()?.pan || "",
+        step: "authenticated",
+      });
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            status: "authenticated",
+            message: "Session injected. You can now view folios and create SIPs.",
+          }),
+        }],
+      };
     }
   );
 
