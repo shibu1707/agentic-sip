@@ -97,11 +97,19 @@ function createMcpServer() {
         return { content: [{ type: "text", text: JSON.stringify({ error: "No pending login. Call login_investor first." }) }] };
       }
 
-      // Deep-search any object for a field whose name looks like the session token
+      // Deep-search any object for a value that looks like the session token.
+      // The real token is a long hex string (e.g. 310C94BE...461641C15).
       function findInvetorlink(obj, depth = 0) {
-        if (!obj || typeof obj !== "object" || depth > 5) return null;
+        if (!obj || typeof obj !== "object" || depth > 6) return null;
         for (const [k, v] of Object.entries(obj)) {
-          if (/invet[oa]r.*link|investorlink|session_?id|invetorlink/i.test(k) && typeof v === "string" && v.length > 20) return v;
+          if (typeof v !== "string" || v.length < 20) continue;
+          const keyLooksRight = /invet[oa]rlink|investorlink|session|securitykey|token|authkey/i.test(k);
+          const valueLooksRight = /^[A-Fa-f0-9]{24,}$/.test(v);
+          if (keyLooksRight && valueLooksRight) return v;
+        }
+        // Second pass: key name alone (value may not be pure hex)
+        for (const [k, v] of Object.entries(obj)) {
+          if (/invet[oa]rlink|investorlink|securitykey/i.test(k) && typeof v === "string" && v.length > 20) return v;
         }
         for (const v of Object.values(obj)) {
           if (typeof v === "object") {
@@ -113,6 +121,8 @@ function createMcpServer() {
       }
 
       try {
+        kotakApi.clearResponseLog();
+
         // Step 2a: validate OTP
         const otpResult = await kotakApi.validateOtp({ mobile: session.mobile, otp });
         const otpStatus = otpResult?.msgTable?.[0]?.Status || otpResult?.Status;
@@ -120,33 +130,33 @@ function createMcpServer() {
           return { content: [{ type: "text", text: JSON.stringify({ error: "OTP verification failed", detail: otpResult }) }] };
         }
 
-        // OTP validation itself may return the session token
-        let investorLink = findInvetorlink(otpResult);
-
         // Step 2b: get MPIN details
-        const mpinDet = await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => ({}));
-        if (!investorLink) investorLink = findInvetorlink(mpinDet);
+        await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => ({}));
 
         // Step 2c: if MPIN provided, try CHECKLOGINNEW
-        let loginResult = null;
-        if (!investorLink && mpin) {
-          loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
-          investorLink = findInvetorlink(loginResult);
+        if (mpin) {
+          await kotakApi.checkLoginNew({ mobile: session.mobile, mpin }).catch(() => ({}));
+        }
+
+        // Search every response — body AND headers — for the session token
+        let investorLink = null;
+        for (const entry of kotakApi.responseLog) {
+          investorLink = findInvetorlink(entry.headers) || findInvetorlink(entry.body);
+          if (investorLink) break;
         }
 
         if (!investorLink) {
-          const debugData = {
-            error: "Could not find session token in any API response",
-            raw_otpValidate: otpResult,
-            raw_mpinDet: mpinDet,
-            raw_checkLoginNew: loginResult,
-          };
-          // Write to disk so the raw JSON can be inspected outside Claude
-          try { writeFileSync("/tmp/kotak-debug.json", JSON.stringify(debugData, null, 2)); } catch {}
+          // Full log including response headers, so the token's location can be identified
+          try {
+            writeFileSync("/tmp/kotak-debug.json", JSON.stringify({
+              error: "Session token not found in any response body or header",
+              responses: kotakApi.responseLog,
+            }, null, 2));
+          } catch {}
           return {
             content: [{
               type: "text",
-              text: "Login failed: session token not found in any API response. Raw responses saved to /tmp/kotak-debug.json — use get_debug_log tool to read them.",
+              text: "Login failed: no session token in any response body or header. Full log (including response headers) saved to /tmp/kotak-debug.json — use get_debug_log to read it.",
             }],
           };
         }

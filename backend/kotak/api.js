@@ -9,6 +9,10 @@ function toUserId(mobile) {
   return mobile.replace(/^\+91/, "").replace(/\s/g, "");
 }
 
+// Rolling log of recent responses (headers + body) for debugging the login flow
+export const responseLog = [];
+export function clearResponseLog() { responseLog.length = 0; }
+
 async function kotakPost(path, encryptedBody, securityKey = null) {
   const headers = {
     "Content-Type": "application/x-www-form-urlencoded",
@@ -29,8 +33,17 @@ async function kotakPost(path, encryptedBody, securityKey = null) {
   // Body is sent as raw encrypted string — no strInput= wrapper
   const response = await fetch(url, { method: "POST", headers, body: encryptedBody });
 
+  // Capture response headers — the session token may arrive here rather than in the body
+  const respHeaders = {};
+  response.headers.forEach((v, k) => { respHeaders[k] = v; });
+  try {
+    const sc = response.headers.getSetCookie?.();
+    if (sc?.length) respHeaders["set-cookie-all"] = sc;
+  } catch {}
+
   if (!response.ok) {
     const text = await response.text();
+    responseLog.push({ path, status: response.status, headers: respHeaders, error: text.slice(0, 400) });
     throw new Error(`Kotak API ${response.status} on ${path}: ${text.slice(0, 400)}`);
   }
 
@@ -38,12 +51,17 @@ async function kotakPost(path, encryptedBody, securityKey = null) {
   const raw = await response.text();
   // Strip surrounding JSON quotes if present
   const stripped = raw.startsWith('"') ? JSON.parse(raw) : raw;
+  let body;
   try {
-    return JSON.parse(decryptDotnet(stripped));
+    body = JSON.parse(decryptDotnet(stripped));
   } catch {
     // Some endpoints return plain JSON
-    return JSON.parse(raw);
+    try { body = JSON.parse(raw); } catch { body = raw; }
   }
+
+  responseLog.push({ path, status: response.status, headers: respHeaders, body });
+  if (responseLog.length > 20) responseLog.shift();
+  return body;
 }
 
 // Build the standard authenticated payload and encrypt it
