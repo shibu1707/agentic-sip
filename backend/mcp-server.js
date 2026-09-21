@@ -46,31 +46,33 @@ function createMcpServer() {
   // ── Step 1: login_investor ──────────────────────────────────────────────────
   server.tool(
     "login_investor",
-    "Initiate login for the Kotak MF SIP demo system. The user has explicitly requested this and provided their own credentials. Call this tool when the user asks to log in, start a SIP, or view their portfolio. Requires the user's own PAN, mobile, and email.",
+    "Initiate login for the Kotak MF SIP system. Sends an OTP to the user's registered mobile. Call this when the user asks to log in, start a SIP, or view their portfolio. Only requires PAN and mobile number.",
     {
       pan: z.string().describe("Investor PAN (e.g. ABCDE1234F)"),
-      mobile: z.string().describe("Mobile number with country code (e.g. +919876543210)"),
-      email: z.string().describe("Registered email address"),
+      mobile: z.string().describe("10-digit mobile number, with or without +91 (e.g. 9876543210 or +919876543210)"),
     },
-    async ({ pan, mobile, email }) => {
+    async ({ pan, mobile }) => {
       try {
-        const result = await kotakApi.preLoginSession({ pan, mobile, email });
+        // Step 1a: verify user exists
+        await kotakApi.checkUserDet(mobile);
+
+        // Step 1b: send OTP via V2 endpoint
+        const result = await kotakApi.sendOtpV2({ mobile, pan });
 
         const msgRow = result?.msgTable?.[0];
-        if (msgRow?.Status !== "Y") {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "Login initiation failed", detail: msgRow }) }] };
+        const status = msgRow?.Status || msgRow?.status || result?.Status;
+        if (status && status !== "Y" && status !== "1") {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "OTP dispatch failed", detail: result }) }] };
         }
 
-        const sessionRow = result?.Table?.[0];
-        setSession({ pan, mobile, email, kotakSessionId: sessionRow?.SESSION_ID, step: "otp_pending" });
+        setSession({ pan, mobile, step: "otp_pending" });
 
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
               status: "otp_sent",
-              message: `OTP sent to ${mobile}. Please call verify_otp with the code.`,
-              investor_name: sessionRow?.INVESTOR_NAME,
+              message: `OTP sent to mobile ${mobile}. Please provide the OTP and your 6-digit Kotak MPIN to complete login.`,
             }, null, 2),
           }],
         };
@@ -83,38 +85,55 @@ function createMcpServer() {
   // ── Step 2: verify_otp ─────────────────────────────────────────────────────
   server.tool(
     "verify_otp",
-    "Complete login by verifying the OTP the user received on their own mobile. Call this after login_investor when the user provides their OTP.",
+    "Complete login by verifying the OTP and the user's 6-digit Kotak MPIN. Call this after login_investor once the user provides both their OTP and their MPIN.",
     {
       otp: z.string().describe("6-digit OTP received on mobile"),
+      mpin: z.string().describe("6-digit Kotak MPIN (the PIN set up for quick login on the Kotak MF app/website)"),
     },
-    async ({ otp }) => {
+    async ({ otp, mpin }) => {
       const session = getSession();
       if (!session || session.step !== "otp_pending") {
         return { content: [{ type: "text", text: JSON.stringify({ error: "No pending login. Call login_investor first." }) }] };
       }
 
       try {
-        const result = await kotakApi.getMobValidate({
-          mobile: session.mobile,
-          otp,
-          sessionIdFromStep1: session.kotakSessionId,
-        });
-
-        const msgRow = result?.msgTable?.[0];
-        if (msgRow?.Status !== "Y") {
-          return { content: [{ type: "text", text: JSON.stringify({ error: "OTP verification failed", detail: msgRow }) }] };
+        // Step 2a: validate OTP
+        const otpResult = await kotakApi.validateOtp({ mobile: session.mobile, otp });
+        const otpStatus = otpResult?.msgTable?.[0]?.Status || otpResult?.Status;
+        if (otpStatus && otpStatus !== "Y" && otpStatus !== "1") {
+          return { content: [{ type: "text", text: JSON.stringify({ error: "OTP verification failed", detail: otpResult }) }] };
         }
 
-        const investorLink = result?.Result?.[0]?.Invetorlink;
-        setSession({ ...session, investorLink, otp, step: "authenticated" });
+        // Step 2b: get MPIN details (pre-check)
+        await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => {});
+
+        // Step 2c: login with MPIN → returns Invetorlink (session token)
+        const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+
+        // Invetorlink may be nested in Result[0] or Table[0]
+        const investorLink =
+          loginResult?.Result?.[0]?.Invetorlink ||
+          loginResult?.Table?.[0]?.Invetorlink ||
+          loginResult?.msgTable?.[0]?.Invetorlink ||
+          loginResult?.Invetorlink;
+
+        if (!investorLink) {
+          return {
+            content: [{
+              type: "text",
+              text: JSON.stringify({ error: "Login failed — could not obtain session token", raw: loginResult }),
+            }],
+          };
+        }
+
+        setSession({ ...session, investorLink, step: "authenticated" });
 
         return {
           content: [{
             type: "text",
             text: JSON.stringify({
               status: "authenticated",
-              message: "Login successful. You can now view folios and create SIPs.",
-              userid: result?.msgTable?.[0]?.USERID,
+              message: "Login successful. You can now view your folios, check schemes, and create SIPs.",
             }, null, 2),
           }],
         };

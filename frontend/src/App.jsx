@@ -12,11 +12,10 @@ export default function App() {
   // Login state
   const [pan, setPan]       = useState("");
   const [mobile, setMobile] = useState("");
-  const [email, setEmail]   = useState("");
-  const [investorName, setInvestorName] = useState("");
 
   // OTP state
   const [otp, setOtp] = useState("");
+  const [mpin, setMpin] = useState("");
 
   // SIP form state
   const [folioNo, setFolioNo]         = useState("");
@@ -48,12 +47,10 @@ export default function App() {
     setLoading(true);
     try {
       const mobileFormatted = mobile.startsWith("+91") ? mobile : `+91${mobile}`;
-      const { data } = await axios.post(`${API}/api/login`, {
+      await axios.post(`${API}/api/login`, {
         pan: pan.toUpperCase().trim(),
         mobile: mobileFormatted,
-        email: email.trim(),
       });
-      setInvestorName(data.investor_name || "");
       setStep(STEPS.OTP);
     } catch (err) {
       setError(err.response?.data?.error || "Login failed. Check your details.");
@@ -68,10 +65,10 @@ export default function App() {
     clearError();
     setLoading(true);
     try {
-      await axios.post(`${API}/api/verify-otp`, { otp });
+      await axios.post(`${API}/api/verify-otp`, { otp, mpin });
       setStep(STEPS.SIP);
     } catch (err) {
-      setError(err.response?.data?.error || "Invalid OTP. Please try again.");
+      setError(err.response?.data?.error || "Invalid OTP or MPIN. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -118,8 +115,8 @@ export default function App() {
   // ── Step 4: Reset ────────────────────────────────────────────────────────────
   async function handleReset() {
     await axios.post(`${API}/api/logout`).catch(() => {});
-    setPan(""); setMobile(""); setEmail(""); setInvestorName("");
-    setOtp("");
+    setPan(""); setMobile("");
+    setOtp(""); setMpin("");
     setFolioNo(""); setSchemeCd(""); setSchemeName(""); setAmount("");
     setFrequency("MONTHLY"); setDuration(""); setOtmId(""); setBankAccNo(""); setStartDate("");
     setProjection(null); setSipResult(null);
@@ -161,7 +158,7 @@ export default function App() {
       {step === STEPS.LOGIN && (
         <div className="form-box">
           <h2>Investor Login</h2>
-          <p className="form-hint">Enter your Kotak MF registered details. An OTP will be sent to your mobile.</p>
+          <p className="form-hint">Enter your Kotak MF PAN and registered mobile. An OTP will be sent to your mobile.</p>
           <form onSubmit={handleLogin}>
             <div className="form-grid">
               <div className="form-field">
@@ -187,17 +184,6 @@ export default function App() {
                   required
                 />
               </div>
-
-              <div className="form-field full-width">
-                <label>Registered Email</label>
-                <input
-                  type="email"
-                  placeholder="e.g. name@email.com"
-                  value={email}
-                  onChange={e => setEmail(e.target.value)}
-                  required
-                />
-              </div>
             </div>
             <div className="submit-row">
               <button type="submit" className="btn-submit" disabled={loading}>
@@ -211,22 +197,30 @@ export default function App() {
       {/* ── STEP 2: OTP ── */}
       {step === STEPS.OTP && (
         <div className="form-box">
-          <h2>Verify OTP</h2>
-          <p className="form-hint">
-            {investorName && <strong>{investorName} — </strong>}
-            Enter the 6-digit OTP sent to +91{mobile}.
-          </p>
+          <h2>Verify OTP &amp; MPIN</h2>
+          <p className="form-hint">Enter the 6-digit OTP sent to +91{mobile} and your Kotak MPIN.</p>
           <form onSubmit={handleOtp}>
             <div className="form-grid">
-              <div className="form-field full-width">
+              <div className="form-field">
                 <label>OTP</label>
                 <input
                   type="text"
-                  placeholder="Enter 6-digit OTP"
+                  placeholder="6-digit OTP"
                   value={otp}
                   onChange={e => setOtp(e.target.value.replace(/\D/g, ""))}
                   maxLength={6}
                   autoFocus
+                  required
+                />
+              </div>
+              <div className="form-field">
+                <label>Kotak MPIN</label>
+                <input
+                  type="password"
+                  placeholder="6-digit MPIN"
+                  value={mpin}
+                  onChange={e => setMpin(e.target.value.replace(/\D/g, ""))}
+                  maxLength={6}
                   required
                 />
               </div>
@@ -235,7 +229,7 @@ export default function App() {
               <button type="button" className="btn-reset" onClick={() => setStep(STEPS.LOGIN)}>
                 ← Back
               </button>
-              <button type="submit" className="btn-submit" disabled={loading || otp.length < 6}>
+              <button type="submit" className="btn-submit" disabled={loading || otp.length < 6 || mpin.length < 6}>
                 {loading ? "Verifying..." : "Verify & Continue →"}
               </button>
             </div>

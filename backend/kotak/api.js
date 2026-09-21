@@ -59,40 +59,83 @@ function authPayload(fields, session) {
 
 // ─── Login flow ───────────────────────────────────────────────────────────────
 
-// Step 1: trigger OTP — plain JSON, no encryption
-export async function preLoginSession({ pan, email, mobile }) {
-  const plain = JSON.stringify({
-    FLAG: "PRELOGINSIP",
-    INVESTOR_NAME: pan,
+// Step 1: check user exists by mobile number
+export async function checkUserDet(mobile) {
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const enc = encryptDotnet(JSON.stringify({ MOBILE_NO: bare }));
+  return kotakPost("/Admin/check/USERDET", enc);
+}
+
+// Step 2: send OTP to mobile
+export async function sendOtpV2({ mobile, pan }) {
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const enc = encryptDotnet(JSON.stringify({
+    FLAG: "GETMOBVALIDATENEW",
+    MOBILE_NO: bare,
+    PAN: pan,
+    TYPE: "LOGINNEW",
+    EMAIL_ID: "",
+    RESENDOTP: "M",
+    COUNTRY_CODE: "+91",
+    SOURCE: { Source: "msite", OS: "Linux" },
+    USER_CAT: "E",
+  }));
+  return kotakPost("/Admin/GETMOBVALIDATEV2", enc);
+}
+
+// Step 3: validate OTP (OTP must be sent as a number, not a string)
+export async function validateOtp({ mobile, otp }) {
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const enc = encryptDotnet(JSON.stringify({
+    FLAG: "VALIDATEOTPLOGIN",
+    TYPE: "CHECKLOGINNEW",
+    STATUS: "UNLOCK",
+    USERINFO: bare,
+    OTP: Number(otp),
+  }));
+  return kotakPost("/Admin/OTPVALIDATE", enc);
+}
+
+// Step 4: get MPIN details (called between OTP validation and MPIN login)
+export async function getMpinDetByMob({ mobile, email = "" }) {
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const enc = encryptDotnet(JSON.stringify({
+    MOB_NUM: bare,
+    DEVICE_ID: "WEB",
     EMAIL_ID: email,
-    MOBILE_NO: mobile,
-    UTM_SOURCE: "",
-    UTM_MEDIUM: "",
-    UTM_CAMPAIGN: "",
-    UTM_TERM: "",
-    URL: "/investor/SIP-PreLogin-Mobile-Submit",
-    AS_STEP: "1",
-  });
-  return kotakPost("/Admin/PRELOGINSESSION", plain);
+    COUNTRY_CODE: "+91",
+  }));
+  return kotakPost("/Admin/GETMPINDETBYMOB", enc);
 }
 
-// Step 2: validate OTP → get Invetorlink (SESSION_ID for all subsequent calls)
-export async function getMobValidate({ mobile, otp, sessionIdFromStep1 }) {
-  const enc = encryptDotnet(
-    JSON.stringify({ FLAG: "GETMOBVALIDATE", MOBILE_NO: mobile, OTP: otp })
-  );
-  return kotakPost("/Admin/GETMOBVALIDATE", enc, sessionIdFromStep1);
+// Step 5: login with 6-digit MPIN → response contains Invetorlink (SESSION_ID)
+export async function checkLoginNew({ mobile, mpin }) {
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const pin = String(mpin);
+  const enc = encryptDotnet(JSON.stringify({
+    FLAG: "CHECKLOGINNEW",
+    USER_NAME: bare,
+    LOGIN_NAME: bare,
+    MOB_PIN: pin,
+    VERSION: "6.7",
+    MODE: "CHKPIN",
+    DEVICE_ID: "WEB",
+    MINFO: `WEB$#$6.7$#$6$#$A$#$${bare}$#$${pin}$#$USER_LOGIN`,
+    USER_FROM: "M",
+  }));
+  return kotakPost("/Admin/CHECKLOGINNEW", enc);
 }
 
-// Step 3: get OTP-based folio list (plain JSON)
+// Get folio list (post-login)
 export async function getFolioList({ mobile, otp }) {
-  const plain = JSON.stringify({
+  const bare = mobile.replace(/^\+91/, "").replace(/\s/g, "");
+  const enc = encryptDotnet(JSON.stringify({
     FLAG: "GETFOLIOLIST",
     TYPE: "UNLOCK",
-    MOBILE_NO: mobile,
-    OTP: otp,
-  });
-  return kotakPost("/Admin/GETFOLIOLIST", plain);
+    MOBILE_NO: bare,
+    OTP: Number(otp),
+  }));
+  return kotakPost("/Admin/GETFOLIOLIST", enc);
 }
 
 // ─── Authenticated calls (require Invetorlink in SESSION_ID) ──────────────────

@@ -15,49 +15,53 @@ app.use(express.json());
 
 // Step 1: send OTP
 app.post("/api/login", async (req, res) => {
-  const { pan, mobile, email } = req.body;
-  if (!pan || !mobile || !email)
-    return res.status(400).json({ error: "pan, mobile, and email are required" });
+  const { pan, mobile } = req.body;
+  if (!pan || !mobile)
+    return res.status(400).json({ error: "pan and mobile are required" });
 
   try {
-    const result = await kotakApi.preLoginSession({ pan, mobile, email });
-    const msg = result?.msgTable?.[0];
+    await kotakApi.checkUserDet(mobile);
+    const result = await kotakApi.sendOtpV2({ mobile, pan });
+    const status = result?.msgTable?.[0]?.Status || result?.Status;
 
-    if (msg?.Status !== "Y")
-      return res.status(401).json({ error: "Login failed", detail: msg });
+    if (status && status !== "Y" && status !== "1")
+      return res.status(401).json({ error: "OTP dispatch failed", detail: result });
 
-    const sessionRow = result?.Table?.[0];
-    setSession({ pan, mobile, email, kotakSessionId: sessionRow?.SESSION_ID, step: "otp_pending" });
-
-    res.json({ status: "otp_sent", investor_name: sessionRow?.INVESTOR_NAME });
+    setSession({ pan, mobile, step: "otp_pending" });
+    res.json({ status: "otp_sent", message: `OTP sent to ${mobile}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Step 2: verify OTP → get Invetorlink
+// Step 2: verify OTP + MPIN → get Invetorlink
 app.post("/api/verify-otp", async (req, res) => {
-  const { otp } = req.body;
-  if (!otp) return res.status(400).json({ error: "otp is required" });
+  const { otp, mpin } = req.body;
+  if (!otp || !mpin) return res.status(400).json({ error: "otp and mpin are required" });
 
   const session = getSession();
   if (!session || session.step !== "otp_pending")
     return res.status(401).json({ error: "No pending login. Call /api/login first." });
 
   try {
-    const result = await kotakApi.getMobValidate({
-      mobile: session.mobile,
-      otp,
-      sessionIdFromStep1: session.kotakSessionId,
-    });
-    const msg = result?.msgTable?.[0];
+    const otpResult = await kotakApi.validateOtp({ mobile: session.mobile, otp });
+    const otpStatus = otpResult?.msgTable?.[0]?.Status || otpResult?.Status;
+    if (otpStatus && otpStatus !== "Y" && otpStatus !== "1")
+      return res.status(401).json({ error: "OTP verification failed", detail: otpResult });
 
-    if (msg?.Status !== "Y")
-      return res.status(401).json({ error: "OTP verification failed", detail: msg });
+    await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => {});
 
-    const investorLink = result?.Result?.[0]?.Invetorlink;
-    setSession({ ...session, investorLink, otp, step: "authenticated" });
+    const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+    const investorLink =
+      loginResult?.Result?.[0]?.Invetorlink ||
+      loginResult?.Table?.[0]?.Invetorlink ||
+      loginResult?.msgTable?.[0]?.Invetorlink ||
+      loginResult?.Invetorlink;
 
+    if (!investorLink)
+      return res.status(401).json({ error: "Login failed — no session token returned", raw: loginResult });
+
+    setSession({ ...session, investorLink, step: "authenticated" });
     res.json({ status: "authenticated" });
   } catch (err) {
     res.status(500).json({ error: err.message });
