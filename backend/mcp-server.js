@@ -3,6 +3,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import express from "express";
+import { writeFileSync } from "fs";
 import cors from "cors";
 import dotenv from "dotenv";
 import { randomUUID } from "crypto";
@@ -134,17 +135,18 @@ function createMcpServer() {
         }
 
         if (!investorLink) {
-          // Return ALL raw responses so Claude (and the developer) can see exactly what came back
+          const debugData = {
+            error: "Could not find session token in any API response",
+            raw_otpValidate: otpResult,
+            raw_mpinDet: mpinDet,
+            raw_checkLoginNew: loginResult,
+          };
+          // Write to disk so the raw JSON can be inspected outside Claude
+          try { writeFileSync("/tmp/kotak-debug.json", JSON.stringify(debugData, null, 2)); } catch {}
           return {
             content: [{
               type: "text",
-              text: JSON.stringify({
-                error: "Could not find session token in any API response. The raw responses are included below for debugging.",
-                hint: "Share this output so the session token field name can be identified and the code updated.",
-                raw_otpValidate: otpResult,
-                raw_mpinDet: mpinDet,
-                raw_checkLoginNew: loginResult,
-              }, null, 2),
+              text: "Login failed: session token not found in any API response. Raw responses saved to /tmp/kotak-debug.json — use get_debug_log tool to read them.",
             }],
           };
         }
@@ -191,6 +193,22 @@ function createMcpServer() {
           }),
         }],
       };
+    }
+  );
+
+  // ── get_debug_log ──────────────────────────────────────────────────────────
+  server.tool(
+    "get_debug_log",
+    "Read the raw API responses saved during the last failed login attempt. Use this immediately after a failed verify_otp to inspect what Kotak returned.",
+    {},
+    async () => {
+      try {
+        const { readFileSync } = await import("fs");
+        const data = readFileSync("/tmp/kotak-debug.json", "utf8");
+        return { content: [{ type: "text", text: data }] };
+      } catch {
+        return { content: [{ type: "text", text: "No debug log found. Run verify_otp first." }] };
+      }
     }
   );
 
