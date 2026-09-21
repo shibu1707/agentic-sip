@@ -157,22 +157,23 @@ function createMcpServer() {
           if (investorLink) break;
         }
 
-        // Whether or not we have an Invetorlink, we now have the AWSALB cookie
-        // which is enough for all subsequent API calls
+        // Always write debug log so the full response chain is visible
+        try {
+          writeFileSync("/tmp/kotak-debug.json", JSON.stringify({
+            investorLinkFound: !!investorLink,
+            cookieJar: kotakApi.getCookieJar(),
+            responses: kotakApi.responseLog,
+          }, null, 2));
+        } catch {}
+
         const cookieJar = kotakApi.getCookieJar();
         const hasCookies = cookieJar.includes("AWSALB");
 
         if (!investorLink && !hasCookies) {
-          try {
-            writeFileSync("/tmp/kotak-debug.json", JSON.stringify({
-              error: "No session token and no AWSALB cookie — login could not be established",
-              responses: kotakApi.responseLog,
-            }, null, 2));
-          } catch {}
           return {
             content: [{
               type: "text",
-              text: "Login failed: neither a session token nor an AWSALB sticky-session cookie was returned. Debug log saved to /tmp/kotak-debug.json.",
+              text: "Login failed: no session token and no AWSALB cookie. Debug log saved to /tmp/kotak-debug.json.",
             }],
           };
         }
