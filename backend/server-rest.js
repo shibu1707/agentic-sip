@@ -51,15 +51,16 @@ app.post("/api/verify-otp", async (req, res) => {
 
     await kotakApi.getMpinDetByMob({ mobile: session.mobile }).catch(() => {});
 
-    const loginResult = await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
-    const investorLink =
-      loginResult?.Result?.[0]?.Invetorlink ||
-      loginResult?.Table?.[0]?.Invetorlink ||
-      loginResult?.msgTable?.[0]?.Invetorlink ||
-      loginResult?.Invetorlink;
+    await kotakApi.checkLoginNew({ mobile: session.mobile, mpin });
+
+    // INSERTLOGINDETAILS is the audit call the browser makes after CHECKLOGINNEW.
+    // Its response contains msgTable[0].Session = the full Invetorlink (248 hex chars).
+    // CHECKLOGINNEW itself never returns the session token for FIRST_LOGIN:Y accounts.
+    const insertRes = await kotakApi.insertLoginDetails({ mobile: session.mobile, email: session.email || "" }).catch(() => ({}));
+    const investorLink = insertRes?.msgTable?.[0]?.Session || null;
 
     if (!investorLink)
-      return res.status(401).json({ error: "Login failed — no session token returned", raw: loginResult });
+      return res.status(401).json({ error: "Login failed — session token not found in INSERTLOGINDETAILS", raw: insertRes });
 
     setSession({ ...session, investorLink, step: "authenticated" });
     res.json({ status: "authenticated" });
@@ -190,29 +191,40 @@ function sipEndDate(startDateStr, durationMonths) {
   return `${String(d.getDate()).padStart(2,"0")}-${months[d.getMonth()]}-${d.getFullYear()}`;
 }
 
+// Full-control SIP endpoint
 app.post("/api/sip", async (req, res) => {
   const session = requireAuth(req, res);
   if (!session) return;
 
-  const { folio_no, scheme_cd, amount, frequency, start_date, duration_months, otm_id, bank_account_no } = req.body;
-  if (!folio_no || !scheme_cd || !amount || !frequency || !duration_months || !otm_id || !bank_account_no)
-    return res.status(400).json({ error: "folio_no, scheme_cd, amount, frequency, duration_months, otm_id, bank_account_no are required" });
+  const {
+    folio_no, scheme_code = 144, amount, duration_months,
+    sip_day = "1", start_date, payment_mode = "ISIP", mandate_ref_no = "",
+  } = req.body;
+  if (!amount || !duration_months)
+    return res.status(400).json({ error: "amount and duration_months are required" });
 
-  const today = new Date();
-  const nextMonth = new Date(today.getFullYear(), today.getMonth() + 1, 1);
-  const startISO = start_date || nextMonth.toISOString().split("T")[0];
+  const folio    = folio_no || process.env.KOTAK_FOLIO || "15461772";
+  const startISO = start_date || (() => {
+    const d = new Date(); d.setMonth(d.getMonth() + 1); d.setDate(1);
+    return d.toISOString().split("T")[0];
+  })();
 
   try {
     const result = await kotakApi.registerSip(
       {
-        folioNo: folio_no,
-        schemeCd: scheme_cd,
+        folioNo:      folio,
+        schemeCode:   scheme_code,
+        schemeName:   "Kotak ELSS Tax Saver Fund - Gr",
         amount,
-        frequency,
-        startDate: toKotakDate(startISO),
-        endDate: sipEndDate(startISO, duration_months),
-        otmId: otm_id,
-        bankAccountNo: bank_account_no,
+        frequency:    "OM",
+        sipDay:       sip_day,
+        startDate:    toKotakDate(startISO),
+        endDate:      sipEndDate(startISO, duration_months),
+        paymentMode:  payment_mode,
+        mandateRefId: mandate_ref_no,
+        umrn:         mandate_ref_no,
+        brokerId:     "ARN-114376",
+        euin:         "E207433",
       },
       session
     );
